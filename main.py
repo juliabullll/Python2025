@@ -15,8 +15,8 @@ import os
 from lxml import html
 import time
 
-TOKEN = "8558938442:AAHf6KwcI6dzfoCAk7YtDwhjo04GeO4PH2k"
-FINNHUB_KEY = "d4e98ghr01qgp2f7e5fgd4e98ghr01qgp2f7e5g0"
+TOKEN = "your_token"
+FINNHUB_KEY = "your_API"
 
 bot = Bot(TOKEN, timeout=60)
 dp = Dispatcher()
