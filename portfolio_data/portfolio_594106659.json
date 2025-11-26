@@ -1,0 +1,20 @@
+[
+  {
+    "ticker": "SBER",
+    "company_name": "Сбербанк",
+    "security_type": "акция",
+    "buy_price": 109.0,
+    "quantity": 5,
+    "buy_date": "2025-11-24",
+    "currency": "RUB"
+  },
+  {
+    "ticker": "SBER",
+    "company_name": "Сбербанк",
+    "security_type": "акция",
+    "buy_price": 304.0,
+    "quantity": 5,
+    "buy_date": "2025-11-24",
+    "currency": "RUB"
+  }
+]

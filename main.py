@@ -12,6 +12,8 @@ import pandas as pd
 import aiohttp
 import json
 import os
+from lxml import html
+import time
 
 TOKEN = "8558938442:AAHf6KwcI6dzfoCAk7YtDwhjo04GeO4PH2k"
 FINNHUB_KEY = "d4e98ghr01qgp2f7e5fgd4e98ghr01qgp2f7e5g0"
@@ -298,267 +300,83 @@ def get_currency_rate(currency_pair):
 
 # Облигации
 def get_bond_quote(ticker):
-    """
-    Получение данных по облигациям с парсингом внешних источников
-    """
     try:
-        sources = [
-            get_bond_from_investing(ticker),
-            get_bond_from_rusbonds(ticker),
-            get_bond_from_cbonds(ticker)
-        ]
+        moex_data = get_moex_bond_data(ticker)
+        if moex_data and moex_data.get('price') is not None:
+            return moex_data
+
+        corpbonds_data = get_bond_from_corpbonds(ticker)
+        if corpbonds_data and corpbonds_data.get('price') is not None:
+            return corpbonds_data
         
-        for bond_data in sources:
-            if bond_data:
-                return bond_data
-        
-        return get_realistic_bond_data(ticker)
+        return get_bond_unavailable_data(ticker)
         
     except Exception as e:
         print(f"All bond sources failed for {ticker}: {e}")
-        return get_realistic_bond_data(ticker)
+        return get_bond_unavailable_data(ticker)
 
-def get_bond_from_investing(ticker):
-    """Парсинг данных с Investing.com"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
-        }
-        
-        search_url = f"https://ru.investing.com/search/?q={ticker}"
-        response = requests.get(search_url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            bond_link = None
-            search_results = soup.find_all('a', href=re.compile(r'/bonds/'))
-            
-            for result in search_results:
-                if ticker in result.get_text():
-                    bond_link = result.get('href')
-                    break
-            
-            if bond_link:
-                if not bond_link.startswith('http'):
-                    bond_link = f"https://ru.investing.com{bond_link}"
-                
-                bond_response = requests.get(bond_link, headers=headers, timeout=10)
-                if bond_response.status_code == 200:
-                    bond_soup = BeautifulSoup(bond_response.content, 'html.parser')
-                    
-                    price_element = bond_soup.find('span', {'data-test': 'instrument-price-last'})
-                    if not price_element:
-                        price_element = bond_soup.find('div', class_='last-price-value')
-                    
-                    if price_element:
-                        price_text = price_element.get_text().strip()
-                        price_match = re.search(r'(\d+[.,]\d+)', price_text.replace(',', '.'))
-                        if price_match:
-                            price = float(price_match.group(1))
-                            face_value = 1000.0
-                            price_percent = (price / face_value) * 100
-                            
-                            if ticker.startswith('SU') or 'ОФЗ' in ticker.upper():
-                                bond_type = "ОФЗ"
-                                company_name = f"ОФЗ {ticker}"
-                            else:
-                                bond_type = "Корпоративная"
-                                company_name = f"Корпоративная облигация {ticker}"
-                            
-                            chart_link = f"https://www.moex.com/ru/issue.aspx?code={ticker}"
-                            
-                            return {
-                                'company_name': company_name,
-                                'ticker': ticker,
-                                'price': price,
-                                'price_percent': price_percent,
-                                'face_value': face_value,
-                                'change_percent': 0.1,  
-                                'change_amount': price * 0.001,
-                                'prev_close': price * 0.999,
-                                'security_type': 'облигация',
-                                'currency': 'RUB',
-                                'bond_type': bond_type,
-                                'board': 'Investing.com',
-                                'chart_link': chart_link,
-                                'source': 'Investing.com'
-                            }
-        
-        return None
-        
-    except Exception as e:
-        print(f"Investing.com error for {ticker}: {e}")
-        return None
-
-def get_bond_from_rusbonds(ticker):
-    """Парсинг данных с Rusbonds.ru"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-        
-        search_url = f"https://www.rusbonds.ru/search.asp?search={ticker}"
-        response = requests.get(search_url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            bond_link = soup.find('a', href=re.compile(r'srcheader\.asp\?code='))
-            if bond_link:
-                bond_url = bond_link.get('href')
-                if bond_url and not bond_url.startswith('http'):
-                    bond_url = f"https://www.rusbonds.ru{bond_url}"
-                
-                bond_response = requests.get(bond_url, headers=headers, timeout=10)
-                if bond_response.status_code == 200:
-                    bond_soup = BeautifulSoup(bond_response.content, 'html.parser')
-                    price_element = bond_soup.find('td', string=re.compile(r'Цена'))
-                    if price_element:
-                        price_td = price_element.find_next_sibling('td')
-                        if price_td:
-                            price_text = price_td.get_text().strip()
-                            price_match = re.search(r'(\d+[.,]\d+)', price_text.replace(',', '.'))
-                            if price_match:
-                                price = float(price_match.group(1))
-                                face_value = 1000.0
-                                price_percent = (price / face_value) * 100
-                                if ticker.startswith('SU'):
-                                    bond_type = "ОФЗ"
-                                    company_name = f"ОФЗ {ticker}"
-                                else:
-                                    bond_type = "Корпоративная"
-                                    company_name = f"Корпоративная облигация {ticker}"
-                                
-                                chart_link = f"https://www.moex.com/ru/issue.aspx?code={ticker}"
-                                
-                                return {
-                                    'company_name': company_name,
-                                    'ticker': ticker,
-                                    'price': price,
-                                    'price_percent': price_percent,
-                                    'face_value': face_value,
-                                    'change_percent': 0.05,
-                                    'change_amount': price * 0.0005,
-                                    'prev_close': price * 0.9995,
-                                    'security_type': 'облигация',
-                                    'currency': 'RUB',
-                                    'bond_type': bond_type,
-                                    'board': 'Rusbonds',
-                                    'chart_link': chart_link,
-                                    'source': 'Rusbonds'
-                                }
-        
-        return None
-        
-    except Exception as e:
-        print(f"Rusbonds error for {ticker}: {e}")
-        return None
-
-def get_bond_from_cbonds(ticker):
-    """Парсинг данных с Cbonds.ru"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-        
-        search_url = f"https://cbonds.ru/search/?query={ticker}"
-        response = requests.get(search_url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            bond_link = soup.find('a', href=re.compile(r'/bonds/'))
-            if bond_link:
-                bond_url = bond_link.get('href')
-                if bond_url and not bond_url.startswith('http'):
-                    bond_url = f"https://cbonds.ru{bond_url}"
-                
-                bond_response = requests.get(bond_url, headers=headers, timeout=10)
-                if bond_response.status_code == 200:
-                    bond_soup = BeautifulSoup(bond_response.content, 'html.parser')
-                    
-                    price_element = bond_soup.find('div', class_='price') or bond_soup.find('span', class_='price')
-                    if price_element:
-                        price_text = price_element.get_text().strip()
-                        price_match = re.search(r'(\d+[.,]\d+)', price_text.replace(',', '.'))
-                        if price_match:
-                            price = float(price_match.group(1))
-                            face_value = 1000.0
-                            price_percent = (price / face_value) * 100
-                            
-                            if ticker.startswith('SU'):
-                                bond_type = "ОФЗ"
-                                company_name = f"ОФЗ {ticker}"
-                            else:
-                                bond_type = "Корпоративная"
-                                company_name = f"Корпоративная облигация {ticker}"
-                            
-                            chart_link = f"https://www.moex.com/ru/issue.aspx?code={ticker}"
-                            
-                            return {
-                                'company_name': company_name,
-                                'ticker': ticker,
-                                'price': price,
-                                'price_percent': price_percent,
-                                'face_value': face_value,
-                                'change_percent': 0.08,
-                                'change_amount': price * 0.0008,
-                                'prev_close': price * 0.9992,
-                                'security_type': 'облигация',
-                                'currency': 'RUB',
-                                'bond_type': bond_type,
-                                'board': 'Cbonds',
-                                'chart_link': chart_link,
-                                'source': 'Cbonds'
-                            }
-        
-        return None
-        
-    except Exception as e:
-        print(f"Cbonds error for {ticker}: {e}")
-        return None
-
-def get_realistic_bond_data(ticker):
-    """Реалистичные данные когда внешние источники недоступны"""
+def get_moex_bond_data(ticker):
     try:
         if ticker.startswith('SU'):
-            if '26230' in ticker:
-                base_price = 631.7 
-            elif '26231' in ticker:
-                base_price = 985.5
-            elif '26232' in ticker:
-                base_price = 1020.3
-            else:
-                base_price = 950 + (hash(ticker) % 100)
+            board = 'TQOB'
+        elif ticker.startswith('RU'):
+            board = 'TQCB'
+        else:
+            return None
+        
+        url = (f"https://iss.moex.com/iss/engines/stock/markets/bonds/boards/{board}"
+               f"/securities/{ticker}.json?iss.meta=off")
+        
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+        
+        if response.status_code != 200:
+            return None
+            
+        data = response.json()
+        
+        securities_data = data.get('securities', {}).get('data', [])
+        if not securities_data:
+            return None
+            
+        security_info = securities_data[0]
+        
+        market_data = data.get('marketdata', {}).get('data', [])
+        if not market_data:
+            return None
+            
+        market_info = market_data[0]
+        
+        company_name = security_info[2] if len(security_info) > 2 else f"Облигация {ticker}"
+        
+        last_price = market_info[12] if len(market_info) > 12 else market_info[4]  
+        if last_price is None:
+            return None
+        
+        prev_close = security_info[11] if len(security_info) > 11 and security_info[11] else last_price
+        
+        if prev_close and prev_close > 0:
+            change_percent = ((last_price - prev_close) / prev_close) * 100
+            change_amount = last_price - prev_close
+        else:
+            change_percent = 0
+            change_amount = 0
+        
+        if ticker.startswith('SU'):
             bond_type = "ОФЗ"
             company_name = f"ОФЗ {ticker}"
-        elif ticker.startswith('RU'):
-            if 'A10DJV9' in ticker:  
-                base_price = 999.0  
-            else:
-                base_price = 998 + (hash(ticker) % 5)
+        else:
             bond_type = "Корпоративная"
             company_name = f"Корпоративная облигация {ticker}"
-        else:
-            base_price = 995 + (hash(ticker) % 10)
-            bond_type = "Облигация"
-            company_name = f"Облигация {ticker}"
         
         face_value = 1000.0
-        price_percent = (base_price / face_value) * 100
-        change_percent = (hash(ticker + str(datetime.now().minute)) % 10 - 5) / 1000.0
-        change_amount = base_price * change_percent / 100
-        prev_close = base_price - change_amount
+        price_percent = (last_price / face_value) * 100
         
         chart_link = f"https://www.moex.com/ru/issue.aspx?code={ticker}"
         
         return {
             'company_name': company_name,
             'ticker': ticker,
-            'price': base_price,
+            'price': last_price,
             'price_percent': price_percent,
             'face_value': face_value,
             'change_percent': change_percent,
@@ -567,14 +385,171 @@ def get_realistic_bond_data(ticker):
             'security_type': 'облигация',
             'currency': 'RUB',
             'bond_type': bond_type,
-            'board': 'MOEX',
+            'board': board,
             'chart_link': chart_link,
-            'source': 'Расчетные данные'
+            'source': 'MOEX'
         }
         
     except Exception as e:
-        print(f"Realistic bond data error: {e}")
+        print(f"MOEX bond error for {ticker}: {e}")
         return None
+
+def get_bond_from_corpbonds(ticker):
+    try:
+        url = f"https://corpbonds.ru/bond/{ticker}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code != 200:
+            print(f"Corpbonds.ru returned status code: {response.status_code}")
+            return None
+        
+        tree = html.fromstring(response.content)
+
+        price_xpath = '//*[@id="root"]/main/section/header/main/article[4]/div/p[2]'
+
+        price_elements = tree.xpath(price_xpath)
+        
+        if not price_elements:
+            print(f"Price element not found for {ticker} using XPath: {price_xpath}")
+            alternative_xpaths = [
+                '//p[contains(text(), "Цена")]/following-sibling::p',
+                '//div[contains(@class, "price")]',
+                '//span[contains(@class, "price")]',
+                '//*[contains(text(), "Текущая цена")]/following::p[1]'
+            ]
+            
+            for alt_xpath in alternative_xpaths:
+                price_elements = tree.xpath(alt_xpath)
+                if price_elements:
+                    print(f"Found price using alternative XPath: {alt_xpath}")
+                    break
+        
+        if not price_elements:
+            return None
+        
+        price_element = price_elements[0]
+        price_text = price_element.text_content().strip()
+        
+        price = parse_price_from_text(price_text)
+        
+        if price is None:
+            print(f"Could not parse price from text: '{price_text}'")
+            return None
+
+        company_name = get_company_name_from_corpbonds(tree, ticker)
+        
+        face_value = 1000.0
+        price_percent = (price / face_value) * 100
+        
+        chart_link = f"https://www.moex.com/ru/issue.aspx?code={ticker}"
+        
+        return {
+            'company_name': company_name,
+            'ticker': ticker,
+            'price': price,
+            'price_percent': price_percent,
+            'face_value': face_value,
+            'change_percent': 0,  
+            'change_amount': 0,   
+            'prev_close': price, 
+            'security_type': 'облигация',
+            'currency': 'RUB',
+            'bond_type': "ОФЗ" if ticker.startswith('SU') else "Корпоративная",
+            'board': 'corpbonds.ru',
+            'chart_link': chart_link,
+            'source': ''
+        }
+        
+    except Exception as e:
+        print(f"Corpbonds.ru parsing error for {ticker}: {e}")
+        return None
+
+def parse_price_from_text(price_text):
+    """Парсит цену из текста, полученного с сайта"""
+    try:
+        cleaned_text = re.sub(r'[^\d.,]', '', price_text.strip())
+        
+        cleaned_text = cleaned_text.replace(',', '.')
+        
+        if cleaned_text.count('.') > 1:
+            parts = cleaned_text.split('.')
+            cleaned_text = ''.join(parts[:-1]) + '.' + parts[-1]
+
+        price = float(cleaned_text)
+        
+        if price < 100: 
+            price = price * 10 
+        
+        return price
+        
+    except Exception as e:
+        print(f"Error parsing price from text '{price_text}': {e}")
+        return None
+
+def get_company_name_from_corpbonds(tree, ticker):
+    try:
+        name_xpaths = [
+            '//h1',
+            '//title',
+            '//*[contains(@class, "name")]',
+            '//*[contains(@class, "title")]'
+        ]
+        
+        for xpath in name_xpaths:
+            elements = tree.xpath(xpath)
+            if elements:
+                name = elements[0].text_content().strip()
+                if name and len(name) > 5: 
+                    return name
+        
+        if ticker.startswith('SU'):
+            return f"ОФЗ {ticker}"
+        else:
+            return f"Корпоративная облигация {ticker}"
+            
+    except Exception as e:
+        print(f"Error getting company name: {e}")
+        if ticker.startswith('SU'):
+            return f"ОФЗ {ticker}"
+        else:
+            return f"Корпоративная облигация {ticker}"
+
+def get_bond_unavailable_data(ticker):
+    if ticker.startswith('SU'):
+        bond_type = "ОФЗ"
+        company_name = f"ОФЗ {ticker}"
+    else:
+        bond_type = "Корпоративная"
+        company_name = f"Корпоративная облигация {ticker}"
+    
+    return {
+        'company_name': company_name,
+        'ticker': ticker,
+        'price': None,
+        'price_percent': None,
+        'face_value': 1000.0,
+        'change_percent': None,
+        'change_amount': None,
+        'prev_close': None,
+        'security_type': 'облигация',
+        'currency': 'RUB',
+        'bond_type': bond_type,
+        'board': 'Недоступно',
+        'chart_link': f"https://www.moex.com/ru/issue.aspx?code={ticker}",
+        'source': 'Данные временно недоступны',
+        'error_message': 'Не удалось получить данные с MOEX и corpbonds.ru. Попробуйте позже.'
+    }
+
 # Российские акции
 def moex_detailed_quote(ticker, security_type="акция"):
     try:
@@ -844,7 +819,7 @@ def get_ticker_news_marketwatch(ticker):
     except Exception as e:
         print(f"MarketWatch news error: {e}")
         return []
-
+    
 # Получение новостей из Риа новости
 def get_recent_news_ria(category="economic"):
     try:
@@ -1441,24 +1416,40 @@ async def handle_message(message: Message):
             add_to_user_queries(user_id, quote_data)
             save_user_history(user_id, ticker, quote_data['security_type'], "success")
             
-            change_indicator = "▼" if quote_data['change_percent'] < 0 else "▲"
+            change_indicator = "▼" if quote_data.get('change_percent', 0) < 0 else "▲"
             
             if quote_data['security_type'] == 'облигация':
-                result_text = f"""
-{change_indicator} {quote_data['company_name']} ({ticker})
+                if quote_data.get('error_message'):
+                    result_text = f"""
+{quote_data['company_name']} ({ticker})
+
+{quote_data['error_message']}
+
+Тип: {quote_data['security_type']} ({quote_data.get('bond_type', '')})
+"""
+                else:
+                    source_info = f" ({quote_data.get('source', '')})" if quote_data.get('source') else ""
+                    result_text = f"""
+{change_indicator} {quote_data['company_name']} ({ticker}){source_info}
 
 Цена: {quote_data['price']:.2f} {quote_data['currency']}
 Цена в % от номинала: {quote_data.get('price_percent', 100):.2f}%
 Номинал: {quote_data.get('face_value', 1000):.2f} {quote_data['currency']}
-Изменение: {quote_data['change_amount']:+.2f} ({quote_data['change_percent']:+.2f}%)
-Пред. закрытие: {quote_data['prev_close']:.2f}
+"""
+                    
+                    
+                    if quote_data.get('change_percent') is not None:
+                        result_text += f"Изменение: {quote_data['change_amount']:+.2f} ({quote_data['change_percent']:+.2f}%)\n"
+                        result_text += f"Пред. закрытие: {quote_data['prev_close']:.2f}\n"
+                    
+                    result_text += f"""
 Тип: {quote_data['security_type']} ({quote_data.get('bond_type', '')})
 Биржа: {quote_data.get('board', 'Не указано')}
 
 Подробный график: {quote_data.get('chart_link', '')}
 
 Обновлено: {datetime.now().strftime('%H:%M %d.%m.%Y')}
-            """
+"""
             else:
                 result_text = f"""
 {change_indicator} {quote_data['company_name']} ({ticker})
@@ -1475,9 +1466,11 @@ async def handle_message(message: Message):
 """
             await message.answer(result_text)
             
-            chart = create_simple_chart(quote_data, quote_data['security_type'])
-            if chart:
-                await message.answer_photo(BufferedInputFile(chart.getvalue(), filename="chart.png"))
+            # Создание графика только если есть данные о предыдущем закрытии
+            if quote_data.get('prev_close') is not None and quote_data.get('price') is not None:
+                chart = create_simple_chart(quote_data, quote_data['security_type'])
+                if chart:
+                    await message.answer_photo(BufferedInputFile(chart.getvalue(), filename="chart.png"))
             
             user_states[user_id] = {"mode": None, "awaiting_ticker": False}
         
